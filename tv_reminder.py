@@ -168,28 +168,39 @@ def format_subject_body(reminders: List[EpisodeReminder], days_ahead: int) -> Tu
     if not reminders:
         return ("TV reminders - nothing due", "No tracked episodes due in the next window.")
 
-    subject = f"TV reminders - {len(reminders)} due in next {days_ahead} days"
+    n = len(reminders)
+    subject = f"📺 TV Reminders — {n} episode{'s' if n != 1 else ''} this week"
     lines: List[str] = []
-    lines.append(f"Found {len(reminders)} upcoming episode(s):")
+    lines.append(subject)
+    lines.append("=" * len(subject))
     lines.append("")
 
     today = date.today()
     for r in reminders:
-        when = "today" if r.airdate == today else "tomorrow" if r.airdate == today + timedelta(days=1) else r.airdate.isoformat()
+        if r.airdate == today:
+            when = "Today"
+        elif r.airdate == today + timedelta(days=1):
+            when = "Tomorrow"
+        else:
+            when = r.airdate.strftime("%A %-d %b")
+
         epcode = ""
         if r.season is not None and r.number is not None:
-            epcode = f" S{int(r.season):02d}E{int(r.number):02d}"
+            epcode = f" — S{int(r.season):02d}E{int(r.number):02d}"
         elif r.season is not None:
-            epcode = f" S{int(r.season):02d}"
+            epcode = f" — S{int(r.season):02d}"
 
         at = f" at {r.airtime}" if r.airtime else ""
-        via = f" ({r.network_or_platform})" if r.network_or_platform else ""
-        url = f"\n  {r.url}" if r.url else ""
+        via = f" · {r.network_or_platform}" if r.network_or_platform else ""
 
-        lines.append(f"- {r.show_name}{epcode} - {when}{at}{via}{url}")
+        lines.append(f"• {r.show_name}{epcode}")
+        lines.append(f"  {when}{at}{via}")
+        if r.url:
+            lines.append(f"  {r.url}")
+        lines.append("")
 
-    lines.append("")
-    lines.append(f"Dashboard: {dashboard_url}")
+    lines.append("-" * 40)
+    lines.append(f"View your dashboard: {dashboard_url}")
     return subject, "\n".join(lines)
 
 
