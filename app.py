@@ -246,12 +246,13 @@ def remove_show_post():
 @require_auth
 def get_show_details(show_name):
     try:
-        show_id = tvmaze_search_show_id(show_name)
-        if not show_id:
-            return jsonify({"error": "Show not found on TVMaze"}), 404
-        r = requests.get(f"https://api.tvmaze.com/shows/{show_id}", timeout=20)
+        # Use the search endpoint directly — it returns full show data in one call
+        r = requests.get("https://api.tvmaze.com/search/shows", params={"q": show_name}, timeout=15)
         r.raise_for_status()
-        show_data = r.json()
+        results = r.json()
+        if not results:
+            return jsonify({"error": "Show not found on TVMaze"}), 404
+        show_data = results[0]["show"]
         details = {
             "name": show_data.get("name", show_name),
             "status": show_data.get("status", "Unknown"),
