@@ -159,7 +159,22 @@ def remove_show(show_name):
     try:
         found = db.remove_show(show_name)
         if not found:
-            return jsonify({"error": "Show not found"}), 404
+            return jsonify({"error": f"Show not found: '{show_name}'"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/shows/remove", methods=["POST"])
+def remove_show_post():
+    """POST-based delete — more reliable on serverless platforms than DELETE method."""
+    try:
+        show_name = request.json.get("name", "").strip()
+        if not show_name:
+            return jsonify({"error": "Show name is required"}), 400
+        found = db.remove_show(show_name)
+        if not found:
+            return jsonify({"error": f"Show not found: '{show_name}'"}), 404
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

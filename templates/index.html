@@ -987,7 +987,11 @@
         
         function removeShow(name) {
             if (!confirm(`Remove "${name}" from tracking?`)) return;
-            fetch(`/api/shows/${encodeURIComponent(name)}`, {method: 'DELETE'})
+            fetch(`/api/shows/remove`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name})
+            })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
@@ -995,10 +999,10 @@
                     loadShows();
                     loadUpcoming();
                 } else {
-                    showStatus('showsStatus', 'Error removing show', 'error');
+                    showStatus('showsStatus', data.error || 'Error removing show', 'error');
                 }
             })
-            .catch(e => showStatus('showsStatus', 'Error removing show', 'error'));
+            .catch(e => showStatus('showsStatus', 'Error removing show: ' + e.message, 'error'));
         }
         
         function updateConfig() {
