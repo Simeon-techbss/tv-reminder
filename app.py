@@ -48,7 +48,7 @@ def validate_show_name(show_name: str) -> dict:
     try:
         show_id = tvmaze_search_show_id(show_name)
         if show_id:
-            r = requests.get(f"https://api.tvmaze.com/shows/{show_id}", timeout=20)
+            r = requests.get(f"https://api.tvmaze.com/shows/{show_id}", timeout=7)
             r.raise_for_status()
             correct_name = r.json().get("name", show_name)
             return {"valid": True, "name": correct_name, "suggestions": [],
@@ -66,7 +66,7 @@ def validate_show_name(show_name: str) -> dict:
             for suggested in close_matches:
                 sid = tvmaze_search_show_id(suggested)
                 if sid:
-                    r = requests.get(f"https://api.tvmaze.com/shows/{sid}", timeout=20)
+                    r = requests.get(f"https://api.tvmaze.com/shows/{sid}", timeout=7)
                     r.raise_for_status()
                     correct_name = r.json().get("name", suggested)
                     return {"valid": False, "name": show_name, "suggestions": [correct_name],
@@ -247,7 +247,7 @@ def remove_show_post():
 def get_show_details(show_name):
     try:
         # Use the search endpoint directly — it returns full show data in one call
-        r = requests.get("https://api.tvmaze.com/search/shows", params={"q": show_name}, timeout=15)
+        r = requests.get("https://api.tvmaze.com/search/shows", params={"q": show_name}, timeout=7)
         r.raise_for_status()
         results = r.json()
         if not results:
