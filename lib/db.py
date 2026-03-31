@@ -1,13 +1,21 @@
 """
 Database helper functions.
 
-All show/config/reminder functions now accept an explicit user_id parameter
-instead of the Phase 2 ADMIN_USER_ID=1 constant. This is what makes the app
-genuinely multi-user: each request passes g.current_user["sub"] as user_id.
+Phase 4 additions:
+- upsert_show_metadata  : stores TVMaze metadata when a show is first added
+- get_show_by_name      : reads cached metadata for the details modal
+- add_show_for_user     : links a show to a user (split out from add_show)
+- upsert_episode_cache  : bulk upsert of schedule rows from the cron job
+- get_upcoming_from_cache : replaces live TVMaze calls in /api/upcoming
+- already_fetched_today : idempotency check for the cron job
+- record_schedule_fetch : audit log entry after each cron run
+- get_active_regions    : which regions need fetching
+- get_users_for_email_fanout : all users + tracked shows in one query
 """
 from __future__ import annotations
 
 import os
+from datetime import date
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
 import psycopg2
@@ -15,10 +23,7 @@ from psycopg2.extras import RealDictCursor
 
 
 def _clean_db_url(url: str) -> str:
-    """
-    Strip parameters psycopg2 doesn't understand.
-    Neon connection strings include 'channel_binding' which psycopg2 rejects.
-    """
+    """Strip parameters psycopg2 doesn't understand (e.g. Neon's channel_binding)."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     params.pop("channel_binding", None)
@@ -36,10 +41,7 @@ def get_conn():
 # ---------------------------------------------------------------------------
 
 def register_user(email: str, password_hash: str, display_name: str | None = None) -> dict:
-    """
-    Insert a new user. The very first user in the table gets is_admin=TRUE
-    automatically — no separate admin setup needed.
-    """
+    """First user in the table gets is_admin=TRUE automatically."""
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM users")
@@ -80,7 +82,7 @@ def update_last_login(user_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Config (region + days_ahead live on the user row)
+# Config
 # ---------------------------------------------------------------------------
 
 def get_config(user_id: int) -> dict:
@@ -104,8 +106,92 @@ def update_config(user_id: int, region: str, days_ahead: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shows
+# Shows — metadata cache
 # ---------------------------------------------------------------------------
+
+def upsert_show_metadata(name: str, meta: dict) -> int:
+    """
+    Insert or update a show's TVMaze metadata. Returns the show's DB id.
+
+    The DO UPDATE only fires when meta_fetched_at IS NULL (i.e. the row was
+    seeded before Phase 4 and has no metadata yet). If a show already has
+    metadata, this is a no-op — we don't overwrite fresh data on every add.
+    Weekly re-fetches are handled by setting meta_fetched_at = NULL via the
+    cron job when the data is stale (> 7 days old).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO shows (
+                    name, tvmaze_id, status, network, image_url,
+                    description, rating, genres, premiered, language,
+                    imdb_id, meta_fetched_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
+                ON CONFLICT (name) DO UPDATE
+                  SET tvmaze_id       = EXCLUDED.tvmaze_id,
+                      status          = EXCLUDED.status,
+                      network         = EXCLUDED.network,
+                      image_url       = EXCLUDED.image_url,
+                      description     = EXCLUDED.description,
+                      rating          = EXCLUDED.rating,
+                      genres          = EXCLUDED.genres,
+                      premiered       = EXCLUDED.premiered,
+                      language        = EXCLUDED.language,
+                      imdb_id         = EXCLUDED.imdb_id,
+                      meta_fetched_at = NOW()
+                  WHERE shows.meta_fetched_at IS NULL
+                     OR shows.meta_fetched_at < NOW() - INTERVAL '7 days'
+                RETURNING id
+                """,
+                (
+                    name,
+                    meta.get("tvmaze_id"),
+                    meta.get("status"),
+                    meta.get("network"),
+                    meta.get("image_url"),
+                    meta.get("description"),
+                    meta.get("rating"),
+                    meta.get("genres") or [],
+                    meta.get("premiered"),
+                    meta.get("language"),
+                    meta.get("imdb_id"),
+                ),
+            )
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            # Row existed and was not updated (fresh data) — just get the id
+            cur.execute("SELECT id FROM shows WHERE name = %s", (name,))
+            return cur.fetchone()[0]
+
+
+def get_show_by_name(name: str) -> dict | None:
+    """Read cached show metadata for the details modal."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, name, tvmaze_id, status, network, image_url,
+                       description, rating, genres, premiered, language,
+                       imdb_id, meta_fetched_at
+                FROM shows WHERE name = %s
+                """,
+                (name,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def add_show_for_user(user_id: int, show_id: int) -> None:
+    """Link a show to a user. No-op if already linked."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_shows (user_id, show_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (user_id, show_id),
+            )
+
 
 def get_show_names(user_id: int) -> list[str]:
     with get_conn() as conn:
@@ -121,25 +207,6 @@ def get_show_names(user_id: int) -> list[str]:
                 (user_id,),
             )
             return [row[0] for row in cur.fetchall()]
-
-
-def add_show(user_id: int, name: str) -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO shows (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id",
-                (name,),
-            )
-            row = cur.fetchone()
-            if row:
-                show_id = row[0]
-            else:
-                cur.execute("SELECT id FROM shows WHERE name = %s", (name,))
-                show_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO user_shows (user_id, show_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (user_id, show_id),
-            )
 
 
 def remove_show(user_id: int, name: str) -> bool:
@@ -158,7 +225,165 @@ def remove_show(user_id: int, name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Sent reminders (replaces state.json)
+# Episode cache
+# ---------------------------------------------------------------------------
+
+def upsert_episode_cache(region: str, episodes: list[dict]) -> int:
+    """
+    Bulk upsert schedule rows from the cron job.
+    Returns the number of rows inserted or updated.
+    """
+    if not episodes:
+        return 0
+    count = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for ep in episodes:
+                cur.execute(
+                    """
+                    INSERT INTO episode_cache (
+                        region, airdate, show_name, tvmaze_show_id,
+                        season, episode_number, airtime, network, episode_url
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (region, airdate, show_name,
+                                 COALESCE(season,-1), COALESCE(episode_number,-1))
+                    DO UPDATE SET
+                        airtime     = EXCLUDED.airtime,
+                        network     = EXCLUDED.network,
+                        episode_url = EXCLUDED.episode_url,
+                        created_at  = NOW()
+                    """,
+                    (
+                        region,
+                        ep["airdate"],
+                        ep["show_name"],
+                        ep.get("tvmaze_show_id"),
+                        ep.get("season"),
+                        ep.get("episode_number"),
+                        ep.get("airtime"),
+                        ep.get("network"),
+                        ep.get("episode_url"),
+                    ),
+                )
+                count += cur.rowcount
+    return count
+
+
+def get_upcoming_from_cache(
+    region: str,
+    tracked_names: list[str],
+    start: date,
+    end: date,
+) -> list[dict]:
+    """
+    Return cached episodes for the user's tracked shows in the given date window.
+    Results are sorted by airdate then show name so the caller can trivially
+    take the first occurrence of each show.
+    """
+    if not tracked_names:
+        return []
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT show_name, season, episode_number, airdate,
+                       airtime, network, episode_url
+                FROM episode_cache
+                WHERE region = %s
+                  AND airdate BETWEEN %s AND %s
+                  AND show_name = ANY(%s)
+                ORDER BY airdate, show_name, season NULLS LAST, episode_number NULLS LAST
+                """,
+                (region, start, end, tracked_names),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def purge_old_episodes() -> int:
+    """Delete episodes with an airdate before today. Called by the cron job."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM episode_cache WHERE airdate < CURRENT_DATE"
+            )
+            return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Cron job helpers
+# ---------------------------------------------------------------------------
+
+def already_fetched_today(region: str, fetch_date: date) -> bool:
+    """Idempotency guard — returns True if the schedule was already fetched today."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 FROM schedule_fetches
+                WHERE region = %s AND fetch_date = %s AND success = TRUE
+                """,
+                (region, fetch_date),
+            )
+            return cur.fetchone() is not None
+
+
+def record_schedule_fetch(
+    region: str,
+    fetch_date: date,
+    episode_count: int = 0,
+    success: bool = True,
+    error_msg: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO schedule_fetches
+                    (region, fetch_date, episode_count, success, error_msg)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (region, fetch_date) DO UPDATE
+                  SET fetched_at    = NOW(),
+                      episode_count = EXCLUDED.episode_count,
+                      success       = EXCLUDED.success,
+                      error_msg     = EXCLUDED.error_msg
+                """,
+                (region, fetch_date, episode_count, success, error_msg),
+            )
+
+
+def get_active_regions() -> list[str]:
+    """Distinct regions used by active users — tells the cron what to fetch."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT region FROM users WHERE is_active = TRUE"
+            )
+            return [row[0] for row in cur.fetchall()]
+
+
+def get_users_for_email_fanout() -> list[dict]:
+    """
+    All active users with their tracked show names in a single query.
+    Used by the cron job to build per-user reminder emails without N+1 queries.
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT u.id, u.email, u.region, u.days_ahead,
+                       ARRAY_AGG(s.name) FILTER (WHERE s.name IS NOT NULL) AS tracked_shows
+                FROM users u
+                LEFT JOIN user_shows us ON us.user_id = u.id
+                LEFT JOIN shows s ON s.id = us.show_id
+                WHERE u.is_active = TRUE
+                GROUP BY u.id, u.email, u.region, u.days_ahead
+                """
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Sent reminders
 # ---------------------------------------------------------------------------
 
 def get_sent_keys(user_id: int) -> set[str]:
@@ -189,10 +414,6 @@ def mark_sent(user_id: int, cache_key: str) -> None:
 # ---------------------------------------------------------------------------
 
 def get_admin_stats() -> dict:
-    """
-    Returns counts and the shared-shows table that demonstrates caching value:
-    shows tracked by 2+ users only need one TVMaze API call, not N calls.
-    """
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE is_active = TRUE")
@@ -219,7 +440,6 @@ def get_admin_stats() -> dict:
             shared_shows = [dict(r) for r in cur.fetchall()]
 
     total_saved = sum(r["api_calls_saved"] for r in shared_shows)
-
     return {
         "users": users,
         "shows_cached": shows_cached,
