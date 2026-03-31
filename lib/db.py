@@ -1,8 +1,9 @@
 """
 Database helper functions.
 
-Phase 2: single admin user (ADMIN_USER_ID = 1).
-Phase 3: replace ADMIN_USER_ID with the authenticated user's ID from JWT.
+All show/config/reminder functions now accept an explicit user_id parameter
+instead of the Phase 2 ADMIN_USER_ID=1 constant. This is what makes the app
+genuinely multi-user: each request passes g.current_user["sub"] as user_id.
 """
 from __future__ import annotations
 
@@ -12,15 +13,11 @@ from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Phase 2 only — removed in Phase 3 when real auth is added
-ADMIN_USER_ID = 1
-
 
 def _clean_db_url(url: str) -> str:
     """
     Strip parameters psycopg2 doesn't understand.
-    Neon connection strings include 'channel_binding' which is a Postgres
-    protocol option, not a libpq keyword — psycopg2 rejects it.
+    Neon connection strings include 'channel_binding' which psycopg2 rejects.
     """
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
@@ -35,26 +32,74 @@ def get_conn():
 
 
 # ---------------------------------------------------------------------------
+# User management
+# ---------------------------------------------------------------------------
+
+def register_user(email: str, password_hash: str, display_name: str | None = None) -> dict:
+    """
+    Insert a new user. The very first user in the table gets is_admin=TRUE
+    automatically — no separate admin setup needed.
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM users")
+            is_admin = cur.fetchone()["cnt"] == 0
+            cur.execute(
+                """
+                INSERT INTO users (email, password_hash, display_name, is_admin)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, email, display_name, is_admin
+                """,
+                (email, password_hash, display_name, is_admin),
+            )
+            return dict(cur.fetchone())
+
+
+def get_user_by_email(email: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, email, display_name, password_hash, is_admin
+                FROM users
+                WHERE email = %s AND is_active = TRUE
+                """,
+                (email,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def update_last_login(user_id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET last_login_at = NOW() WHERE id = %s",
+                (user_id,),
+            )
+
+
+# ---------------------------------------------------------------------------
 # Config (region + days_ahead live on the user row)
 # ---------------------------------------------------------------------------
 
-def get_config() -> dict:
+def get_config(user_id: int) -> dict:
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 "SELECT region, days_ahead FROM users WHERE id = %s",
-                (ADMIN_USER_ID,),
+                (user_id,),
             )
             row = cur.fetchone()
             return {"region": row["region"], "days_ahead": row["days_ahead"]}
 
 
-def update_config(region: str, days_ahead: int) -> None:
+def update_config(user_id: int, region: str, days_ahead: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE users SET region = %s, days_ahead = %s WHERE id = %s",
-                (region, days_ahead, ADMIN_USER_ID),
+                (region, days_ahead, user_id),
             )
 
 
@@ -62,7 +107,7 @@ def update_config(region: str, days_ahead: int) -> None:
 # Shows
 # ---------------------------------------------------------------------------
 
-def get_show_names() -> list[str]:
+def get_show_names(user_id: int) -> list[str]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -73,15 +118,14 @@ def get_show_names() -> list[str]:
                 WHERE us.user_id = %s
                 ORDER BY s.name
                 """,
-                (ADMIN_USER_ID,),
+                (user_id,),
             )
             return [row[0] for row in cur.fetchall()]
 
 
-def add_show(name: str) -> None:
+def add_show(user_id: int, name: str) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Insert show if it doesn't exist, then get its id
             cur.execute(
                 "INSERT INTO shows (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id",
                 (name,),
@@ -92,15 +136,14 @@ def add_show(name: str) -> None:
             else:
                 cur.execute("SELECT id FROM shows WHERE name = %s", (name,))
                 show_id = cur.fetchone()[0]
-            # Link to user
             cur.execute(
                 "INSERT INTO user_shows (user_id, show_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (ADMIN_USER_ID, show_id),
+                (user_id, show_id),
             )
 
 
-def remove_show(name: str) -> bool:
-    """Returns True if a row was deleted, False if the show wasn't tracked."""
+def remove_show(user_id: int, name: str) -> bool:
+    """Returns True if a row was deleted."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -109,7 +152,7 @@ def remove_show(name: str) -> bool:
                 WHERE user_id = %s
                   AND show_id = (SELECT id FROM shows WHERE name = %s)
                 """,
-                (ADMIN_USER_ID, name),
+                (user_id, name),
             )
             return cur.rowcount > 0
 
@@ -118,17 +161,17 @@ def remove_show(name: str) -> bool:
 # Sent reminders (replaces state.json)
 # ---------------------------------------------------------------------------
 
-def get_sent_keys() -> set[str]:
+def get_sent_keys(user_id: int) -> set[str]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT cache_key FROM sent_reminders WHERE user_id = %s",
-                (ADMIN_USER_ID,),
+                (user_id,),
             )
             return {row[0] for row in cur.fetchall()}
 
 
-def mark_sent(cache_key: str) -> None:
+def mark_sent(user_id: int, cache_key: str) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -137,5 +180,50 @@ def mark_sent(cache_key: str) -> None:
                 VALUES (%s, %s)
                 ON CONFLICT DO NOTHING
                 """,
-                (ADMIN_USER_ID, cache_key),
+                (user_id, cache_key),
             )
+
+
+# ---------------------------------------------------------------------------
+# Admin stats
+# ---------------------------------------------------------------------------
+
+def get_admin_stats() -> dict:
+    """
+    Returns counts and the shared-shows table that demonstrates caching value:
+    shows tracked by 2+ users only need one TVMaze API call, not N calls.
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE is_active = TRUE")
+            users = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM shows")
+            shows_cached = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) AS cnt FROM user_shows")
+            total_tracked = cur.fetchone()["cnt"]
+
+            cur.execute(
+                """
+                SELECT s.name,
+                       COUNT(us.user_id)     AS user_count,
+                       COUNT(us.user_id) - 1 AS api_calls_saved
+                FROM shows s
+                JOIN user_shows us ON us.show_id = s.id
+                GROUP BY s.id, s.name
+                HAVING COUNT(us.user_id) >= 2
+                ORDER BY user_count DESC, s.name
+                """
+            )
+            shared_shows = [dict(r) for r in cur.fetchall()]
+
+    total_saved = sum(r["api_calls_saved"] for r in shared_shows)
+
+    return {
+        "users": users,
+        "shows_cached": shows_cached,
+        "total_tracked": total_tracked,
+        "shared_shows": shared_shows,
+        "total_api_calls_saved": total_saved,
+    }
