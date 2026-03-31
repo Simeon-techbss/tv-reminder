@@ -326,14 +326,6 @@ def get_show_details(show_name):
     """
     try:
         show = db.get_show_by_name(show_name)
-
-        # Lazy backfill for pre-Phase4 seeded shows with no metadata
-        if show and show.get("meta_fetched_at") is None:
-            show_data = _fetch_tvmaze_show(show_name)
-            if show_data:
-                db.upsert_show_metadata(show_name, _build_meta_dict(show_data))
-                show = db.get_show_by_name(show_name)
-
         if not show:
             return jsonify({"error": "Show not found"}), 404
 
