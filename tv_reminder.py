@@ -193,7 +193,7 @@ def format_subject_body(reminders: List[EpisodeReminder], days_ahead: int) -> Tu
     return subject, "\n".join(lines)
 
 
-def send_email(subject: str, body: str) -> None:
+def send_email(subject: str, body: str, to: str) -> None:
     load_dotenv("config.env")
 
     host = os.environ["SMTP_HOST"]
@@ -201,12 +201,11 @@ def send_email(subject: str, body: str) -> None:
     username = os.environ["SMTP_USERNAME"]
     app_password = os.environ["SMTP_APP_PASSWORD"]
     email_from = os.environ.get("EMAIL_FROM", username)
-    email_to = os.environ["EMAIL_TO"]
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = email_from
-    msg["To"] = email_to
+    msg["To"] = to
     msg.set_content(body)
 
     with smtplib.SMTP(host, port, timeout=30) as server:

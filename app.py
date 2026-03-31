@@ -323,7 +323,7 @@ def trigger_check():
         if not new_reminders:
             return jsonify({"success": True, "message": "No new reminders to send", "count": 0})
         subject, body = format_subject_body(new_reminders, days_ahead)
-        send_email(subject, body)
+        send_email(subject, body, to=g.current_user["email"])
         for r in new_reminders:
             db.mark_sent(user_id, reminder_key(r))
         return jsonify({"success": True, "message": f"Sent {len(new_reminders)} reminder(s)", "count": len(new_reminders)})
