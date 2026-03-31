@@ -720,7 +720,14 @@
             fetch(`/api/shows/${encodeURIComponent(showName)}/details`)
                 .then(r => r.json())
                 .then(data => {
-                    if (data.error) { content.innerHTML = `<div class="detail-error">❌ ${data.error}</div>`; return; }
+                    if (data.error) {
+                        content.innerHTML = `<div style="text-align:center;padding:30px;color:#6b7280">
+                            <div style="font-size:2em;margin-bottom:10px">🔍</div>
+                            <p style="font-weight:600;color:#374151;margin-bottom:6px">No TVMaze listing found</p>
+                            <p style="font-size:0.88em">This show isn't indexed on TVMaze,<br>so extra details aren't available.</p>
+                        </div>`;
+                        return;
+                    }
                     let html = '';
                     if (data.tvmaze_url || data.imdb_url) {
                         html += '<div class="detail-links">';
