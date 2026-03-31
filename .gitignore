@@ -1,0 +1,8 @@
+config.env
+state.json
+cron.log
+.venv/
+venv/
+__pycache__/
+.claude/
+.vscode/

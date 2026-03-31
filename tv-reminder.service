@@ -1,0 +1,18 @@
+[Unit]
+Description=TV Reminder Web Dashboard
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sherbert
+WorkingDirectory=/home/sherbert/tv-reminder
+Environment="PATH=/home/sherbert/tv-reminder/venv/bin"
+ExecStart=/home/sherbert/tv-reminder/venv/bin/python3 app.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
