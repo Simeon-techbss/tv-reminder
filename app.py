@@ -316,14 +316,13 @@ def remove_show_post():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/shows/<show_name>/details", methods=["GET"])
+@app.route("/api/show-details", methods=["GET"])
 @require_auth
-def get_show_details(show_name):
-    """
-    Read show metadata from the DB cache (Phase 4 — no live TVMaze call).
-    Falls back to a live TVMaze call only for shows seeded before Phase 4
-    that have no metadata yet (meta_fetched_at IS NULL).
-    """
+def get_show_details():
+    """Read show metadata from the DB cache."""
+    show_name = request.args.get("name", "").strip()
+    if not show_name:
+        return jsonify({"error": "name required"}), 400
     try:
         show = db.get_show_by_name(show_name)
         if not show:

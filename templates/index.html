@@ -717,7 +717,7 @@
             document.getElementById('detailsTitle').textContent = showName;
             modal.classList.add('active');
             content.innerHTML = '<div style="padding:40px;text-align:center;color:#999">Loading details...</div>';
-            fetch(`/api/shows/${encodeURIComponent(showName)}/details`)
+            fetch(`/api/show-details?name=${encodeURIComponent(showName)}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.error) {
