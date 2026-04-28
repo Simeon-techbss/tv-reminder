@@ -125,68 +125,48 @@ def validate_show_name(show_name: str) -> dict:
         }
 
 
-def _fetch_tmdb_uk_platform(imdb_id: str | None, show_name: str) -> str | None:
+def _fetch_justwatch_uk_platform(show_name: str) -> str | None:
+    """Look up UK streaming/broadcast platform via JustWatch GraphQL (no API key needed)."""
+    query = """
+    query SearchTitles($searchQuery: String!, $country: Country!, $language: Language!) {
+      popularTitles(country: $country, first: 1, filter: { searchQuery: $searchQuery, objectTypes: [SHOW] }) {
+        edges {
+          node {
+            ... on Show {
+              content(country: $country, language: $language) { title }
+              offers(country: $country, platform: WEB) {
+                monetizationType
+                package { clearName }
+              }
+            }
+          }
+        }
+      }
+    }
     """
-    Look up which UK platform carries this show via TMDB watch providers.
-    Returns e.g. "Sky Go", "Netflix", "Disney Plus", "ITVX", or None.
-    Requires TMDB_API_KEY env var.
-    """
-    api_key = os.environ.get("TMDB_API_KEY")
-    if not api_key:
-        return None
-
-    tmdb_id = None
-
-    # Try IMDB ID first (most reliable cross-reference)
-    if imdb_id:
-        try:
-            r = requests.get(
-                f"https://api.themoviedb.org/3/find/{imdb_id}",
-                params={"api_key": api_key, "external_source": "imdb_id"},
-                timeout=5,
-            )
-            if r.ok:
-                results = r.json().get("tv_results") or []
-                if results:
-                    tmdb_id = results[0]["id"]
-        except Exception:
-            pass
-
-    # Fall back to show name search
-    if not tmdb_id:
-        try:
-            r = requests.get(
-                "https://api.themoviedb.org/3/search/tv",
-                params={"api_key": api_key, "query": show_name},
-                timeout=5,
-            )
-            if r.ok:
-                results = r.json().get("results") or []
-                if results:
-                    tmdb_id = results[0]["id"]
-        except Exception:
-            pass
-
-    if not tmdb_id:
-        return None
-
     try:
-        r = requests.get(
-            f"https://api.themoviedb.org/3/tv/{tmdb_id}/watch/providers",
-            params={"api_key": api_key},
-            timeout=5,
+        r = requests.post(
+            "https://apis.justwatch.com/graphql",
+            json={
+                "query": query,
+                "variables": {"searchQuery": show_name, "country": "GB", "language": "en"},
+            },
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            timeout=7,
         )
         if not r.ok:
             return None
-        gb = r.json().get("results", {}).get("GB", {})
-        for provider_type in ["flatrate", "free", "ads"]:
-            providers = gb.get(provider_type) or []
-            if providers:
-                return providers[0]["provider_name"]
+        edges = r.json().get("data", {}).get("popularTitles", {}).get("edges", [])
+        if not edges:
+            return None
+        offers = edges[0]["node"].get("offers") or []
+        for mtype in ["FLATRATE", "FREE", "ADS"]:
+            for offer in offers:
+                if offer.get("monetizationType") == mtype:
+                    return offer["package"]["clearName"]
+        return offers[0]["package"]["clearName"] if offers else None
     except Exception:
-        pass
-
-    return None
+        return None
 
 
 def _normalise_show_episodes(
@@ -336,10 +316,7 @@ def admin_refresh_cache():
 @app.route("/api/admin/refresh-platforms", methods=["POST"])
 @require_admin
 def admin_refresh_platforms():
-    """Look up UK streaming platform for each tracked show via TMDB."""
-    if not os.environ.get("TMDB_API_KEY"):
-        return jsonify({"error": "TMDB_API_KEY not configured in environment variables"}), 400
-
+    """Look up UK streaming platform for each tracked show via JustWatch."""
     db.ensure_uk_platform_column()
     shows = db.get_all_tracked_shows()
     results = []
@@ -347,12 +324,12 @@ def admin_refresh_platforms():
 
     for show in shows:
         try:
-            platform = _fetch_tmdb_uk_platform(show.get("imdb_id"), show["name"])
+            platform = _fetch_justwatch_uk_platform(show["name"])
             if platform:
                 db.update_show_uk_platform(show["id"], platform)
                 results.append({"show": show["name"], "uk_platform": platform})
             else:
-                results.append({"show": show["name"], "uk_platform": None, "note": "not found on TMDB GB"})
+                results.append({"show": show["name"], "uk_platform": None, "note": "not found on JustWatch GB"})
         except Exception as e:
             errors.append({"show": show["name"], "error": str(e)})
 
@@ -456,10 +433,7 @@ def remove_show_post():
 @app.route("/api/shows/find-platform", methods=["POST"])
 @require_auth
 def find_show_platform():
-    """Look up UK streaming/broadcast platform for a show via TMDB. Stores result in DB."""
-    if not os.environ.get("TMDB_API_KEY"):
-        return jsonify({"error": "TMDB_API_KEY not configured — ask your admin to add it"}), 400
-
+    """Look up UK streaming/broadcast platform for a show via JustWatch. Stores result in DB."""
     show_name = (request.json or {}).get("name", "").strip()
     if not show_name:
         return jsonify({"error": "name required"}), 400
@@ -469,7 +443,7 @@ def find_show_platform():
     if not show:
         return jsonify({"error": "Show not found"}), 404
 
-    platform = _fetch_tmdb_uk_platform(show.get("imdb_id"), show_name)
+    platform = _fetch_justwatch_uk_platform(show_name)
     if platform:
         db.update_show_uk_platform(show["id"], platform)
 
