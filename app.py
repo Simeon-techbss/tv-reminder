@@ -125,6 +125,70 @@ def validate_show_name(show_name: str) -> dict:
         }
 
 
+def _fetch_tmdb_uk_platform(imdb_id: str | None, show_name: str) -> str | None:
+    """
+    Look up which UK platform carries this show via TMDB watch providers.
+    Returns e.g. "Sky Go", "Netflix", "Disney Plus", "ITVX", or None.
+    Requires TMDB_API_KEY env var.
+    """
+    api_key = os.environ.get("TMDB_API_KEY")
+    if not api_key:
+        return None
+
+    tmdb_id = None
+
+    # Try IMDB ID first (most reliable cross-reference)
+    if imdb_id:
+        try:
+            r = requests.get(
+                f"https://api.themoviedb.org/3/find/{imdb_id}",
+                params={"api_key": api_key, "external_source": "imdb_id"},
+                timeout=5,
+            )
+            if r.ok:
+                results = r.json().get("tv_results") or []
+                if results:
+                    tmdb_id = results[0]["id"]
+        except Exception:
+            pass
+
+    # Fall back to show name search
+    if not tmdb_id:
+        try:
+            r = requests.get(
+                "https://api.themoviedb.org/3/search/tv",
+                params={"api_key": api_key, "query": show_name},
+                timeout=5,
+            )
+            if r.ok:
+                results = r.json().get("results") or []
+                if results:
+                    tmdb_id = results[0]["id"]
+        except Exception:
+            pass
+
+    if not tmdb_id:
+        return None
+
+    try:
+        r = requests.get(
+            f"https://api.themoviedb.org/3/tv/{tmdb_id}/watch/providers",
+            params={"api_key": api_key},
+            timeout=5,
+        )
+        if not r.ok:
+            return None
+        gb = r.json().get("results", {}).get("GB", {})
+        for provider_type in ["flatrate", "free", "ads"]:
+            providers = gb.get(provider_type) or []
+            if providers:
+                return providers[0]["provider_name"]
+    except Exception:
+        pass
+
+    return None
+
+
 def _normalise_show_episodes(
     show_name: str, tvmaze_show_id: int, network: str | None, raw_eps: list
 ) -> list[dict]:
@@ -229,6 +293,7 @@ def admin_refresh_cache():
     results = []
     errors = []
 
+    db.ensure_uk_platform_column()
     purged = db.purge_old_episodes()
     results.append({"action": "purge_old_episodes", "rows_deleted": purged})
 
@@ -249,8 +314,9 @@ def admin_refresh_cache():
                 ep for ep in eps
                 if ep.get("airdate") and today <= date.fromisoformat(ep["airdate"]) <= end
             ]
+            display_network = show.get("uk_platform") or show.get("network")
             normalised = _normalise_show_episodes(
-                show["name"], show["tvmaze_id"], show.get("network"), upcoming
+                show["name"], show["tvmaze_id"], display_network, upcoming
             )
             count = db.upsert_episode_cache("GLOBAL", normalised)
             total_count += count
@@ -262,6 +328,37 @@ def admin_refresh_cache():
     return jsonify({
         "success": not bool(errors),
         "episodes_total": total_count,
+        "results": results,
+        "errors": errors,
+    })
+
+
+@app.route("/api/admin/refresh-platforms", methods=["POST"])
+@require_admin
+def admin_refresh_platforms():
+    """Look up UK streaming platform for each tracked show via TMDB."""
+    if not os.environ.get("TMDB_API_KEY"):
+        return jsonify({"error": "TMDB_API_KEY not configured in environment variables"}), 400
+
+    db.ensure_uk_platform_column()
+    shows = db.get_all_tracked_shows()
+    results = []
+    errors = []
+
+    for show in shows:
+        try:
+            platform = _fetch_tmdb_uk_platform(show.get("imdb_id"), show["name"])
+            if platform:
+                db.update_show_uk_platform(show["id"], platform)
+                results.append({"show": show["name"], "uk_platform": platform})
+            else:
+                results.append({"show": show["name"], "uk_platform": None, "note": "not found on TMDB GB"})
+        except Exception as e:
+            errors.append({"show": show["name"], "error": str(e)})
+
+    return jsonify({
+        "success": not bool(errors),
+        "updated": len([r for r in results if r.get("uk_platform")]),
         "results": results,
         "errors": errors,
     })
@@ -354,6 +451,29 @@ def remove_show_post():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/shows/find-platform", methods=["POST"])
+@require_auth
+def find_show_platform():
+    """Look up UK streaming/broadcast platform for a show via TMDB. Stores result in DB."""
+    if not os.environ.get("TMDB_API_KEY"):
+        return jsonify({"error": "TMDB_API_KEY not configured — ask your admin to add it"}), 400
+
+    show_name = (request.json or {}).get("name", "").strip()
+    if not show_name:
+        return jsonify({"error": "name required"}), 400
+
+    db.ensure_uk_platform_column()
+    show = db.get_show_by_name(show_name)
+    if not show:
+        return jsonify({"error": "Show not found"}), 404
+
+    platform = _fetch_tmdb_uk_platform(show.get("imdb_id"), show_name)
+    if platform:
+        db.update_show_uk_platform(show["id"], platform)
+
+    return jsonify({"show": show_name, "uk_platform": platform})
 
 
 @app.route("/api/show-details", methods=["GET"])
@@ -555,8 +675,9 @@ def cron_daily():
                     ep for ep in eps
                     if ep.get("airdate") and today <= date.fromisoformat(ep["airdate"]) <= end
                 ]
+                display_network = show.get("uk_platform") or show.get("network")
                 normalised = _normalise_show_episodes(
-                    show["name"], show["tvmaze_id"], show.get("network"), upcoming
+                    show["name"], show["tvmaze_id"], display_network, upcoming
                 )
                 count = db.upsert_episode_cache("GLOBAL", normalised)
                 total_count += count

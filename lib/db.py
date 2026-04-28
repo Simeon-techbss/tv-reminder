@@ -209,13 +209,23 @@ def get_show_names(user_id: int) -> list[str]:
             return [row[0] for row in cur.fetchall()]
 
 
+def ensure_uk_platform_column() -> None:
+    """Add uk_platform to shows table if not present. Safe to call repeatedly."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE shows ADD COLUMN IF NOT EXISTS uk_platform TEXT"
+            )
+
+
 def get_all_tracked_shows() -> list[dict]:
     """All distinct shows tracked by any active user, with TVMaze metadata."""
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT DISTINCT s.id, s.name, s.tvmaze_id, s.network
+                SELECT DISTINCT s.id, s.name, s.tvmaze_id, s.network,
+                       s.imdb_id, s.uk_platform
                 FROM shows s
                 JOIN user_shows us ON us.show_id = s.id
                 JOIN users u ON u.id = us.user_id
@@ -223,6 +233,16 @@ def get_all_tracked_shows() -> list[dict]:
                 """
             )
             return [dict(r) for r in cur.fetchall()]
+
+
+def update_show_uk_platform(show_id: int, uk_platform: str) -> None:
+    """Store the UK streaming/broadcast platform name for a show."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE shows SET uk_platform = %s WHERE id = %s",
+                (uk_platform, show_id),
+            )
 
 
 def remove_show(user_id: int, name: str) -> bool:
