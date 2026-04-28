@@ -11,7 +11,6 @@ from flask_cors import CORS
 
 from tv_reminder import (
     EpisodeReminder,
-    tvmaze_schedule_for_region,
     reminder_key,
     format_subject_body,
     send_email,
@@ -126,24 +125,19 @@ def validate_show_name(show_name: str) -> dict:
         }
 
 
-def _normalise_episodes_for_cache(region: str, raw_eps: list) -> list[dict]:
-    """Convert raw TVMaze schedule API rows to episode_cache insert dicts."""
+def _normalise_show_episodes(
+    show_name: str, tvmaze_show_id: int, network: str | None, raw_eps: list
+) -> list[dict]:
+    """Convert TVMaze /shows/{id}/episodes response to episode_cache insert dicts."""
     out = []
     for ep in raw_eps:
-        show = ep.get("show") or {}
-        show_name = show.get("name")
         airdate_str = ep.get("airdate")
-        if not show_name or not airdate_str:
+        if not airdate_str:
             continue
-        network = None
-        if show.get("network"):
-            network = show["network"].get("name")
-        elif show.get("webChannel"):
-            network = show["webChannel"].get("name")
         out.append({
             "airdate":        airdate_str,
             "show_name":      show_name,
-            "tvmaze_show_id": show.get("id"),
+            "tvmaze_show_id": tvmaze_show_id,
             "season":         ep.get("season"),
             "episode_number": ep.get("number"),
             "airtime":        ep.get("airtime"),
@@ -477,11 +471,13 @@ def update_config():
 
 @app.route("/api/cron/daily", methods=["GET", "POST"])
 def cron_daily():
-    # Vercel sends Authorization: Bearer <CRON_SECRET>
-    auth = request.headers.get("Authorization", "")
-    secret = auth.replace("Bearer ", "") or request.headers.get("X-Cron-Secret", "")
-    if not secret or secret != os.environ.get("CRON_SECRET"):
-        return jsonify({"error": "Forbidden"}), 403
+    # Only enforce auth if CRON_SECRET is configured in env vars
+    cron_secret = os.environ.get("CRON_SECRET")
+    if cron_secret:
+        auth = request.headers.get("Authorization", "")
+        secret = auth.replace("Bearer ", "") or request.headers.get("X-Cron-Secret", "")
+        if not secret or secret != cron_secret:
+            return jsonify({"error": "Forbidden"}), 403
 
     today = date.today()
     results = []
@@ -491,23 +487,38 @@ def cron_daily():
     purged = db.purge_old_episodes()
     results.append({"action": "purge_old_episodes", "rows_deleted": purged})
 
-    # 2. Fetch schedule for every active region
-    regions = db.get_active_regions()
-    for region in regions:
-        if db.already_fetched_today(region, today):
-            results.append({"region": region, "skipped": True, "reason": "already_fetched_today"})
-            continue
-        try:
-            # Fetch 8 days ahead so users with days_ahead=7 always have full coverage
-            end = today + timedelta(days=8)
-            raw_eps = tvmaze_schedule_for_region(region, today, end)
-            normalised = _normalise_episodes_for_cache(region, raw_eps)
-            count = db.upsert_episode_cache(region, normalised)
-            db.record_schedule_fetch(region, today, episode_count=count, success=True)
-            results.append({"region": region, "episodes_cached": count})
-        except Exception as e:
-            db.record_schedule_fetch(region, today, success=False, error_msg=str(e))
-            errors.append({"region": region, "error": str(e)})
+    # 2. Fetch upcoming episodes for every tracked show (by tvmaze_id)
+    # This approach works for all channels — broadcast, streaming, US, UK, etc.
+    if db.already_fetched_today("GLOBAL", today):
+        results.append({"skipped": True, "reason": "already_fetched_today"})
+    else:
+        shows = db.get_all_tracked_shows()
+        end = today + timedelta(days=30)
+        total_count = 0
+        for show in shows:
+            try:
+                r = requests.get(
+                    f"https://api.tvmaze.com/shows/{show['tvmaze_id']}/episodes",
+                    timeout=7,
+                )
+                if r.status_code != 200:
+                    errors.append({"show": show["name"], "error": f"HTTP {r.status_code}"})
+                    continue
+                eps = r.json()
+                upcoming = [
+                    ep for ep in eps
+                    if ep.get("airdate") and today <= date.fromisoformat(ep["airdate"]) <= end
+                ]
+                normalised = _normalise_show_episodes(
+                    show["name"], show["tvmaze_id"], show.get("network"), upcoming
+                )
+                count = db.upsert_episode_cache("GLOBAL", normalised)
+                total_count += count
+                results.append({"show": show["name"], "episodes_cached": count})
+            except Exception as e:
+                errors.append({"show": show["name"], "error": str(e)})
+
+        db.record_schedule_fetch("GLOBAL", today, episode_count=total_count, success=not bool(errors))
 
     # 3. Fan out reminder emails to all users
     email_results = _cron_send_emails(today)

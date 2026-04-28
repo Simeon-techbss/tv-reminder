@@ -209,6 +209,22 @@ def get_show_names(user_id: int) -> list[str]:
             return [row[0] for row in cur.fetchall()]
 
 
+def get_all_tracked_shows() -> list[dict]:
+    """All distinct shows tracked by any active user, with TVMaze metadata."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT s.id, s.name, s.tvmaze_id, s.network
+                FROM shows s
+                JOIN user_shows us ON us.show_id = s.id
+                JOIN users u ON u.id = us.user_id
+                WHERE u.is_active = TRUE AND s.tvmaze_id IS NOT NULL
+                """
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
 def remove_show(user_id: int, name: str) -> bool:
     """Returns True if a row was deleted."""
     with get_conn() as conn:
@@ -289,7 +305,7 @@ def get_upcoming_from_cache(
                 SELECT show_name, season, episode_number, airdate,
                        airtime, network, episode_url
                 FROM episode_cache
-                WHERE region = %s
+                WHERE (region = %s OR region = 'GLOBAL')
                   AND airdate BETWEEN %s AND %s
                   AND show_name = ANY(%s)
                 ORDER BY airdate, show_name, season NULLS LAST, episode_number NULLS LAST
