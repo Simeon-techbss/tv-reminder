@@ -341,7 +341,7 @@ def get_next_episode(show_name: str) -> dict | None:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT season, episode_number, airdate, airtime, network
+                SELECT season, episode_number, airdate::text AS airdate, airtime, network
                 FROM episode_cache
                 WHERE show_name = %s AND airdate >= CURRENT_DATE
                 ORDER BY airdate, season NULLS LAST, episode_number NULLS LAST
