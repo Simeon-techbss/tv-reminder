@@ -205,6 +205,19 @@
         .status-message.success { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; display: block; }
         .status-message.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; display: block; }
         .status-message.info    { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; display: block; }
+
+        /* ── Bottom toast ── */
+        #bottom-toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+            background: #1f2937; color: #f9fafb; padding: 13px 20px; border-radius: 12px;
+            font-size: 0.95em; font-weight: 500; max-width: calc(100vw - 40px); text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.35); z-index: 9999;
+            opacity: 0; transition: opacity 0.2s ease, transform 0.2s ease; pointer-events: none;
+        }
+        #bottom-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        #bottom-toast.success { background: #065f46; }
+        #bottom-toast.error   { background: #991b1b; }
+        #bottom-toast.info    { background: #1e40af; }
         .loading { text-align: center; padding: 24px; color: #9ca3af; font-size: 0.9em; }
 
         /* ── Modals ── */
@@ -565,14 +578,14 @@
                 });
                 const data = await r.json();
                 if (data.uk_platform) {
-                    showStatus('showsStatus', `📍 ${showName} → ${data.uk_platform} (UK)`, 'success');
+                    showToast(`📍 ${showName} → ${data.uk_platform}`, 'success');
                 } else if (data.error) {
-                    showStatus('showsStatus', data.error, 'error');
+                    showToast(data.error, 'error');
                 } else {
-                    showStatus('showsStatus', `No UK platform found for "${showName}" on TMDB`, 'info');
+                    showToast(`No UK platform found for "${showName}"`, 'info');
                 }
             } catch (e) {
-                showStatus('showsStatus', 'Error: ' + e.message, 'error');
+                showToast('Error: ' + e.message, 'error');
             } finally {
                 btn.textContent = orig; btn.disabled = false;
             }
@@ -861,6 +874,16 @@
             el.className = `status-message ${type}`;
             setTimeout(() => { el.className = 'status-message'; }, 5000);
         }
+
+        let _toastTimer = null;
+        function showToast(message, type = 'info') {
+            const t = document.getElementById('bottom-toast');
+            t.textContent = message;
+            t.className = `show ${type}`;
+            if (_toastTimer) clearTimeout(_toastTimer);
+            _toastTimer = setTimeout(() => { t.className = ''; }, 4000);
+        }
     </script>
+    <div id="bottom-toast"></div>
 </body>
 </html>
