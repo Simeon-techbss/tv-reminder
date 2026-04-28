@@ -221,6 +221,52 @@ def admin_stats():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/admin/refresh-cache", methods=["POST"])
+@require_admin
+def admin_refresh_cache():
+    """Manually trigger the episode cache refresh — same logic as the cron."""
+    today = date.today()
+    results = []
+    errors = []
+
+    purged = db.purge_old_episodes()
+    results.append({"action": "purge_old_episodes", "rows_deleted": purged})
+
+    shows = db.get_all_tracked_shows()
+    end = today + timedelta(days=30)
+    total_count = 0
+    for show in shows:
+        try:
+            r = requests.get(
+                f"https://api.tvmaze.com/shows/{show['tvmaze_id']}/episodes",
+                timeout=7,
+            )
+            if r.status_code != 200:
+                errors.append({"show": show["name"], "error": f"HTTP {r.status_code}"})
+                continue
+            eps = r.json()
+            upcoming = [
+                ep for ep in eps
+                if ep.get("airdate") and today <= date.fromisoformat(ep["airdate"]) <= end
+            ]
+            normalised = _normalise_show_episodes(
+                show["name"], show["tvmaze_id"], show.get("network"), upcoming
+            )
+            count = db.upsert_episode_cache("GLOBAL", normalised)
+            total_count += count
+            results.append({"show": show["name"], "episodes_cached": count})
+        except Exception as e:
+            errors.append({"show": show["name"], "error": str(e)})
+
+    db.record_schedule_fetch("GLOBAL", today, episode_count=total_count, success=not bool(errors))
+    return jsonify({
+        "success": not bool(errors),
+        "episodes_total": total_count,
+        "results": results,
+        "errors": errors,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Show routes
 # ---------------------------------------------------------------------------

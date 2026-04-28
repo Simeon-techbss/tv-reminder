@@ -308,6 +308,11 @@
                         <div class="stat-label">Total User–Show Links</div>
                     </div>
                 </div>
+                <div style="margin-bottom:20px">
+                    <p class="admin-section-title" style="margin-bottom:10px">Episode cache</p>
+                    <button class="btn-sm btn-admin" id="refreshCacheBtn" onclick="refreshCache()" style="font-size:0.9em;padding:10px 18px">⟳ Refresh Episode Cache Now</button>
+                    <div id="refreshCacheStatus" class="status-message" style="margin-top:10px"></div>
+                </div>
                 <p class="admin-section-title">Shows tracked by multiple users — these are the ones where caching saves API calls:</p>
                 <div id="cacheTableContainer"></div>
             </div>
@@ -540,6 +545,26 @@
                     </div>`;
             } catch (e) {
                 showStatus('adminStatus', 'Error loading admin stats: ' + e.message, 'error');
+            }
+        }
+
+        async function refreshCache() {
+            const btn = document.getElementById('refreshCacheBtn');
+            btn.disabled = true; btn.textContent = '⏳ Refreshing...';
+            try {
+                const r = await fetch('/api/admin/refresh-cache', { method: 'POST' });
+                const data = await r.json();
+                if (data.success) {
+                    showStatus('refreshCacheStatus', `✅ Cache refreshed — ${data.episodes_total} episodes stored`, 'success');
+                    loadUpcoming();
+                } else {
+                    const errMsg = data.errors.map(e => `${e.show}: ${e.error}`).join(', ');
+                    showStatus('refreshCacheStatus', `⚠ Partial refresh — ${data.episodes_total} episodes. Errors: ${errMsg}`, 'error');
+                }
+            } catch (e) {
+                showStatus('refreshCacheStatus', 'Error: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false; btn.textContent = '⟳ Refresh Episode Cache Now';
             }
         }
 
