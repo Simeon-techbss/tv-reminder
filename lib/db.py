@@ -335,6 +335,24 @@ def get_upcoming_from_cache(
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_next_episode(show_name: str) -> dict | None:
+    """Return the earliest upcoming episode for a show, or None."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT season, episode_number, airdate, airtime, network
+                FROM episode_cache
+                WHERE show_name = %s AND airdate >= CURRENT_DATE
+                ORDER BY airdate, season NULLS LAST, episode_number NULLS LAST
+                LIMIT 1
+                """,
+                (show_name,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def purge_old_episodes() -> int:
     """Delete episodes with an airdate before today. Called by the cron job."""
     with get_conn() as conn:

@@ -447,7 +447,8 @@ def find_show_platform():
     if platform:
         db.update_show_uk_platform(show["id"], platform)
 
-    return jsonify({"show": show_name, "uk_platform": platform})
+    next_ep = db.get_next_episode(show_name)
+    return jsonify({"show": show_name, "uk_platform": platform, "next_episode": next_ep})
 
 
 @app.route("/api/show-details", methods=["GET"])

@@ -211,6 +211,7 @@
             position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
             background: #1f2937; color: #f9fafb; padding: 13px 20px; border-radius: 12px;
             font-size: 0.95em; font-weight: 500; max-width: calc(100vw - 40px); text-align: center;
+            white-space: pre-line; line-height: 1.5;
             box-shadow: 0 4px 20px rgba(0,0,0,0.35); z-index: 9999;
             opacity: 0; transition: opacity 0.2s ease, transform 0.2s ease; pointer-events: none;
         }
@@ -578,7 +579,15 @@
                 });
                 const data = await r.json();
                 if (data.uk_platform) {
-                    showToast(`📍 ${showName} → ${data.uk_platform}`, 'success');
+                    let msg = `📍 ${showName} — ${data.uk_platform}`;
+                    if (data.next_episode) {
+                        const ep = data.next_episode;
+                        const d = new Date(ep.airdate + 'T00:00:00');
+                        const dateStr = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+                        const epCode = (ep.season && ep.episode_number) ? ` S${String(ep.season).padStart(2,'0')}E${String(ep.episode_number).padStart(2,'0')}` : '';
+                        msg += `\n${dateStr}${epCode}`;
+                    }
+                    showToast(msg, 'success');
                 } else if (data.error) {
                     showToast(data.error, 'error');
                 } else {
