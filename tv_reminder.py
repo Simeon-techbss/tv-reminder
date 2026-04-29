@@ -163,7 +163,7 @@ def reminder_key(r: EpisodeReminder) -> str:
 
 def format_subject_body(reminders: List[EpisodeReminder], days_ahead: int) -> Tuple[str, str]:
     load_dotenv("config.env")
-    dashboard_url = os.environ.get("DASHBOARD_URL", "http://192.168.1.253:5003")
+    dashboard_url = os.environ.get("DASHBOARD_URL", "https://tv-reminder.vercel.app")
 
     if not reminders:
         return ("TV reminders - nothing due", "No tracked episodes due in the next window.")
