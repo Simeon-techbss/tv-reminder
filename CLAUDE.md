@@ -57,3 +57,22 @@ git push
 - Passwords: bcrypt rounds=12
 - Sessions: JWT in `tv_token` httpOnly cookie
 - `require_auth` / `require_admin` decorators on protected routes
+
+## Development setup
+
+**Repo**: `git@github.com:Simeon-techbss/tv-reminder.git`
+
+Simeon codes from either the Pi or the Mac — check which you're on.
+
+### From the Pi
+- Code lives at `/home/sherbert/tv-reminder`
+- Push via SSH — key at `~/.ssh/id_ed25519_github`, already configured in `~/.ssh/config`
+- `git push` works directly, no extra setup needed
+
+### From the Mac
+- Repo is not cloned locally — clone it first:
+  ```bash
+  git clone https://github.com/Simeon-techbss/tv-reminder.git
+  ```
+- GitHub credentials stored in Mac keychain (account: `Simeon-techbss`)
+- macOS will prompt for login password the first time to unlock keychain — that's normal and safe
